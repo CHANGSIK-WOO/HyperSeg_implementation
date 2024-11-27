@@ -20,9 +20,7 @@ Cong Wei, Yujie Zhong, Haoxian Tan, Yong Liu, Zheng Zhao, Jie Hu, and Yujiu Yang
 [![PWC](https://img.shields.io/endpoint.svg?url=https://paperswithcode.com/badge/hyperseg-towards-universal-visual/open-vocabulary-semantic-segmentation-on-5)](https://paperswithcode.com/sota/open-vocabulary-semantic-segmentation-on-5?p=hyperseg-towards-universal-visual)
 
 
-<p align="center">
- <img src="imgs/teaser.jpg" width="100%">
-</p>
+
 <p align="center">
  <img src="imgs/intro.jpg" width="100%">
 </p>
