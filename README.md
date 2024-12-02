@@ -36,4 +36,19 @@ This paper aims to address universal segmentation for image and video perception
 </p>
 
 
+## Citation 
+If you find this project useful in your research, please consider citing:
+
+```
+@article{wei2024hyperseg,
+  title={HyperSeg: Towards Universal Visual Segmentation with Large Language Model},
+  author={Wei, Cong and Zhong, Yujie and Tan, Haoxian and Liu, Yong and Zhao, Zheng and Hu, Jie and Yang, Yujiu},
+  journal={arXiv preprint arXiv:2411.17606},
+  year={2024}
+}
+```
+
+## Acknowledgement
+-  Thanks for great works of [Mask2Former](https://github.com/facebookresearch/Mask2Former), [PSALM](https://github.com/zamling/PSALM) and [Mipha](https://github.com/zhuyiche/llava-phi). Our code is based on them.
+
 
