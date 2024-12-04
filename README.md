@@ -36,6 +36,35 @@ This paper aims to address universal segmentation for image and video perception
 </p>
 
 
+## Installation
+Install required packages. 
+
+```bash
+conda create -n HyperSeg python=3.10.13
+conda activate HyperSeg
+conda install pytorch==1.13.1 torchvision==0.14.1 torchaudio==0.13.1 -c pytorch -c conda-forge -y
+pip install -r requirements.txt
+```
+
+
+## Pre-trained weights
+
+### Mipha
+HyperSeg needs loading Mipha-3B pre-trained weights [Mipha-3B](https://huggingface.co/zhumj34/Mipha-3B).
+### Mask2Former weights
+The Segmentation Predictor requires loading Mask2Former Swin-B weights [Mask2Former](https://dl.fbaipublicfiles.com/maskformer/mask2former/coco/panoptic/maskformer2_swin_base_IN21k_384_bs16_50ep/model_final_54b88a.pkl).
+
+
+
+## Getting Started
+
+See [Preparing Datasets for HyperSeg.](docs/DATASET.md)
+
+See [Running Inference with HyperSeg.](docs/INFERENCE.md)
+
+
+
+
 ## Citation 
 If you find this project useful in your research, please consider citing:
 
