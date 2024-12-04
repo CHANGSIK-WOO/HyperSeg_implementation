@@ -1,5 +1,4 @@
 # HyperSeg: Towards Universal Visual Segmentation with Large Language Model
-Cong Wei, Yujie Zhong, Haoxian Tan, Yong Liu, Zheng Zhao, Jie Hu, and Yujiu Yang
 
 > #### Cong Wei, Yujie Zhong<sup>&dagger;</sup>, Haoxian Tan, Yong Liu, Zheng Zhao, Jie Hu, and Yujiu Yang<sup>&dagger;</sup>
 >
