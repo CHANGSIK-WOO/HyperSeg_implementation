@@ -39,6 +39,29 @@ This paper aims to address universal segmentation for image and video perception
 </p>
 
 
+## 💡 Results
+### Referring Expression Segmentation
+<p align="center">
+ <img src="imgs/exp_refcoco.jpg" width="100%">
+</p>
+
+### Reasoning Segmentation
+<p align="center">
+ <img src="imgs/exp_reason.jpg" width="100%">
+</p>
+
+### Generic Segmentation
+<p align="center">
+ <img src="imgs/exp_generic.jpg" width="100%">
+</p>
+
+### Common Video Segmentation
+<p align="center">
+ <img src="imgs/exp_commonVideo.jpg" width="80%">
+</p>
+
+
+
 ## Installation
 Install required packages. 
 
