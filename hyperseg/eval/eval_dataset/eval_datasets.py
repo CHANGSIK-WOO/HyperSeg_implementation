@@ -422,6 +422,525 @@ class Reason_VOS_dataset_test(RefCOCO_dataset_test):
 
 
 
+class VQA_Dataset(Dataset):
+    def __init__(self, json_path,
+                 tokenizer,
+                 clip_image_processor,
+                 data_args):
+        super(VQA_Dataset, self).__init__()
+
+
+        if json_path.endswith('.json'):
+            questions = json.load(open(os.path.expanduser(json_path), 'r'))
+        elif json_path.endswith('.jsonl'):
+            questions = [json.loads(q) for q in open(os.path.expanduser(json_path), "r")]
+
+        questions = self.get_chunk(questions, data_args.num_chunks, data_args.chunk_idx)
+        print(f'--------chunk_idx: {data_args.chunk_idx}--------')
+    
+        self.tokenizer = tokenizer
+        self.clip_image_processor = clip_image_processor
+        self.questions = questions
+        self.data_args = data_args
+
+    def __len__(self):
+        return len(self.questions)
+    
+    def split_list(self, lst, n):
+        """Split a list into n (roughly) equal-sized chunks"""
+        chunk_size = math.ceil(len(lst) / n)  # integer division
+        return [lst[i:i + chunk_size] for i in range(0, len(lst), chunk_size)]
+
+
+    def get_chunk(self, lst, n, k):
+        chunks = self.split_list(lst, n)
+        return chunks[k]
+
+    def preprocess_llama2(self, sources, tokenizer):
+        conv = conversation_lib.default_conversation.copy()
+        roles = {"human": conv.roles[0], "gpt": conv.roles[1]}
+
+        # Apply prompt templates
+        conversations = []
+        for i, source in enumerate(sources):
+            if roles[source[0]["from"]] != conv.roles[0]:
+                # Skip the first one if it is not from human
+                source = source[1:]
+
+            conv.messages = []
+            for j, sentence in enumerate(source):
+                role = roles[sentence["from"]]
+                assert role == conv.roles[j % 2], f"{i}"
+                conv.append_message(role, sentence["value"])
+            conversations.append(conv.get_prompt())
+
+        # Tokenize conversations
+
+        input_ids = torch.stack(
+            [self.tokenizer_special_tokens(prompt, tokenizer, return_tensors='pt') for prompt in conversations], dim=0)
+
+        targets = input_ids.clone()
+
+        # assert conv.sep_style == conversation_lib.SeparatorStyle.LLAMA_2
+
+        # Mask targets
+        sep = conv.sep + conv.roles[1] + ": "
+        idx = 0
+        for conversation, target in zip(conversations, targets):
+            total_len = int(target.ne(tokenizer.pad_token_id).sum())
+
+            rounds = conversation.split(conv.sep2)
+            if conv.version == 'v0':
+                cur_len = 0
+                end_token_cnt = 0
+                # target[:cur_len] = IGNORE_INDEX
+                idx = 0
+                for i, rou in enumerate(rounds):
+                    if rou == "":
+                        continue
+
+                    parts = rou.split(sep)
+                    if len(parts) != 2:
+                        break
+                    parts[0] += sep
+                    if idx > 0:
+                        round_len = len(self.tokenizer_special_tokens(rou, tokenizer)) + 1
+                    else:
+                        round_len = len(self.tokenizer_special_tokens(rou, tokenizer)) + 1
+                    if idx > 0:
+                        instruction_len = len(self.tokenizer_special_tokens(parts[0], tokenizer))
+                    else:
+                        instruction_len = len(self.tokenizer_special_tokens(parts[0], tokenizer)) - 2
+
+                    target[cur_len: cur_len + instruction_len] = IGNORE_INDEX
+
+                    end_token_cnt += 1
+                    cur_len += round_len
+                    idx += 1
+                target[cur_len:] = IGNORE_INDEX
+                cur_len -= end_token_cnt
+            else:
+                cur_len = 1
+                target[:cur_len] = IGNORE_INDEX
+                for i, rou in enumerate(rounds):
+                    if rou == "":
+                        continue
+
+                    parts = rou.split(sep)
+                    if len(parts) != 2:
+                        break
+                    parts[0] += sep
+                    round_len = len(self.tokenizer_special_tokens(rou, tokenizer))
+                    instruction_len = len(self.tokenizer_special_tokens(parts[0], tokenizer)) - 2
+
+                    target[cur_len: cur_len + instruction_len] = IGNORE_INDEX
+
+                    cur_len += round_len
+                    idx += 1
+                target[cur_len:] = IGNORE_INDEX
+
+            if cur_len < tokenizer.model_max_length:
+                if cur_len != total_len:
+                    target[:] = IGNORE_INDEX
+                    print(
+                        f"WARNING: tokenization mismatch: {cur_len} vs. {total_len}."
+                        f" (ignored)"
+                    )
+
+        return dict(
+            input_ids=input_ids,
+            labels=targets,
+        )
+
+    def tokenizer_special_tokens(self, prompt, tokenizer, image_token_index=IMAGE_TOKEN_INDEX,
+                                 seg_token_index=SEG_TOKEN_INDEX, return_tensors=None):
+        prompt_chunks = []
+        special_tokens = []
+        image_splits = prompt.split('<image>')
+
+        for i, chunk in enumerate(image_splits):
+            if i != 0:
+                special_tokens.append('<image>')
+            seg_splits = chunk.split('<seg>')
+            prompt_chunks.extend(seg_splits)
+            special_tokens.extend(['<seg>'] * (len(seg_splits)-1))
+        prompt_chunks = [tokenizer(chunk).input_ids for chunk in prompt_chunks]
+        special_indexes = [image_token_index if token == '<image>' else seg_token_index for token in special_tokens]
+        # easy one
+        input_ids = []
+        for i, chunk in enumerate(prompt_chunks):
+            input_ids.extend(chunk)
+            if i != len(prompt_chunks) -1:
+                input_ids.extend([special_indexes[i]])
+        if return_tensors is not None:
+            if return_tensors == 'pt':
+                return torch.tensor(input_ids, dtype=torch.long).squeeze()
+            raise ValueError(f'Unsupported tensor type: {return_tensors}')
+        return input_ids
+    
+    def tokenizer_image_token(self, prompt, tokenizer, image_token_index=IMAGE_TOKEN_INDEX, return_tensors=None):
+        prompt_chunks = [tokenizer(chunk).input_ids for chunk in prompt.split('<image>')]
+
+        def insert_separator(X, sep):
+            return [ele for sublist in zip(X, [sep] * len(X)) for ele in sublist][:-1]
+
+        input_ids = []
+        offset = 0
+        if len(prompt_chunks) > 0 and len(prompt_chunks[0]) > 0 and prompt_chunks[0][0] == tokenizer.bos_token_id:
+            offset = 1
+            input_ids.append(prompt_chunks[0][0])
+
+        for x in insert_separator(prompt_chunks, [image_token_index] * (offset + 1)):
+            input_ids.extend(x[offset:])
+
+        if return_tensors is not None:
+            if return_tensors == 'pt':
+                return torch.tensor(input_ids, dtype=torch.long)
+            raise ValueError(f'Unsupported tensor type: {return_tensors}')
+        return input_ids
+
+
+    def __getitem__(self, i) -> Dict[str, torch.Tensor]:
+        sources = self.questions[i]
+        # if isinstance(i, int):
+        #     sources = [sources]
+        # sources = [sources]
+        # assert len(sources) == 1, "Don't know why it is wrapped to a list"  # FIXME
+        
+        data_dict = {}
+
+        if 'question_id' in sources:
+            data_dict['question_id'] = sources['question_id']
+        else:
+            data_dict['question_id'] = sources['id']
+
+        if 'conversations' in sources:
+            qs = sources["conversations"][0]['value'].replace('<image>', '').strip()
+        elif 'text' in sources:
+            qs = sources["text"].replace('<image>', '').strip()
+
+        if 'image' in sources:
+            image_file = sources['image']
+            # if isinstance(self.data_args.image_processor, dict):
+            #     processor = self.data_args.image_processor['instance']
+            # else:
+            #     processor = self.data_args.image_processor
+
+            image_folder = self.data_args.image_folder
+            data_dict['file_name'] = os.path.join(image_folder, image_file)
+            image_clip = cv2.imread(data_dict['file_name'])
+            image_clip = cv2.cvtColor(image_clip, cv2.COLOR_BGR2RGB)
+            image_clip = self.clip_image_processor.preprocess(
+                image_clip, return_tensors="pt")["pixel_values"][0]
+            data_dict['images_clip'] = image_clip
+        
+            # data_dict = processor.preprocess(data_dict)
+            qs = DEFAULT_IMAGE_TOKEN + '\n' + qs
+        else:
+            data_dict['images_clip'] = torch.zeros(1)
+            # data_dict['image'] = None
+        single_promt_dataset = ['sqa', 'mmb']
+        if self.data_args.eval_dataset in single_promt_dataset:
+            qs = qs + '\n' + "Answer with the option's letter from the given choices directly."
+
+        conv = conversation_lib.default_conversation.copy()
+        conv.append_message(conv.roles[0], qs)
+        conv.append_message(conv.roles[1], None)
+        prompt = conv.get_prompt()
+        
+        # text_dict = self.preprocess_llama2(sources, self.tokenizer)
+        input_ids = self.tokenizer_image_token(prompt, self.tokenizer, IMAGE_TOKEN_INDEX, return_tensors='pt')
+
+        data_dict['input_ids'] = input_ids
+        data_dict['dataset_type'] = 'mm_conv'
+
+        
+        data_dict['text'] = qs
+    
+        if 'transforms' in data_dict:
+            del data_dict['transforms']
+        
+        # if 'image' not in data_dict:
+        #     # image does not exist in the data, but the model is multimodal
+        #     crop_size = 1024
+        #     data_dict['image'] = torch.zeros(3, crop_size, crop_size)
+        return data_dict
+
+
+
+
+class VQA_Dataset_MMB(Dataset):
+    def __init__(self, json_path,
+                 tokenizer,
+                 clip_image_processor,
+                 data_args):
+        super(VQA_Dataset_MMB, self).__init__()
+
+
+        if json_path.endswith('.tsv'):
+            questions = pd.read_table(json_path)
+        else:
+            print('wrong format for MMB annotation')
+
+        questions = self.get_chunk(questions, data_args.num_chunks, data_args.chunk_idx)
+        print(f'--------chunk_idx: {data_args.chunk_idx}--------')
+    
+        self.tokenizer = tokenizer
+        self.clip_image_processor = clip_image_processor
+        self.questions = questions
+        self.data_args = data_args
+        
+        self.all_options = ['A', 'B', 'C', 'D']
+
+    def __len__(self):
+        return len(self.questions)
+    
+    def load_image_from_base64(self, image):
+        return Image.open(BytesIO(base64.b64decode(image)))
+    
+    def is_none(self, value):
+        if value is None:
+            return True
+        if type(value) is float and math.isnan(value):
+            return True
+        if type(value) is str and value.lower() == 'nan':
+            return True
+        if type(value) is str and value.lower() == 'none':
+            return True
+        return False
+    
+    def get_options(self, row, options):
+        parsed_options = []
+        for option in options:
+            option_value = row[option]
+            if self.is_none(option_value):
+                break
+            parsed_options.append(option_value)
+        return parsed_options
+
+        
+    def split_list(self, lst, n):
+        """Split a list into n (roughly) equal-sized chunks"""
+        chunk_size = math.ceil(len(lst) / n)  # integer division
+        return [lst[i:i + chunk_size] for i in range(0, len(lst), chunk_size)]
+
+
+    def get_chunk(self, lst, n, k):
+        chunks = self.split_list(lst, n)
+        return chunks[k]
+
+    def preprocess_llama2(self, sources, tokenizer):
+        conv = conversation_lib.default_conversation.copy()
+        roles = {"human": conv.roles[0], "gpt": conv.roles[1]}
+
+        # Apply prompt templates
+        conversations = []
+        for i, source in enumerate(sources):
+            if roles[source[0]["from"]] != conv.roles[0]:
+                # Skip the first one if it is not from human
+                source = source[1:]
+
+            conv.messages = []
+            for j, sentence in enumerate(source):
+                role = roles[sentence["from"]]
+                assert role == conv.roles[j % 2], f"{i}"
+                conv.append_message(role, sentence["value"])
+            conversations.append(conv.get_prompt())
+
+        # Tokenize conversations
+
+        input_ids = torch.stack(
+            [self.tokenizer_special_tokens(prompt, tokenizer, return_tensors='pt') for prompt in conversations], dim=0)
+
+        targets = input_ids.clone()
+
+        # assert conv.sep_style == conversation_lib.SeparatorStyle.LLAMA_2
+
+        # Mask targets
+        sep = conv.sep + conv.roles[1] + ": "
+        idx = 0
+        for conversation, target in zip(conversations, targets):
+            total_len = int(target.ne(tokenizer.pad_token_id).sum())
+
+            rounds = conversation.split(conv.sep2)
+            if conv.version == 'v0':
+                cur_len = 0
+                end_token_cnt = 0
+                # target[:cur_len] = IGNORE_INDEX
+                idx = 0
+                for i, rou in enumerate(rounds):
+                    if rou == "":
+                        continue
+
+                    parts = rou.split(sep)
+                    if len(parts) != 2:
+                        break
+                    parts[0] += sep
+                    if idx > 0:
+                        round_len = len(self.tokenizer_special_tokens(rou, tokenizer)) + 1
+                    else:
+                        round_len = len(self.tokenizer_special_tokens(rou, tokenizer)) + 1
+                    if idx > 0:
+                        instruction_len = len(self.tokenizer_special_tokens(parts[0], tokenizer))
+                    else:
+                        instruction_len = len(self.tokenizer_special_tokens(parts[0], tokenizer)) - 2
+
+                    target[cur_len: cur_len + instruction_len] = IGNORE_INDEX
+
+                    end_token_cnt += 1
+                    cur_len += round_len
+                    idx += 1
+                target[cur_len:] = IGNORE_INDEX
+                cur_len -= end_token_cnt
+            else:
+                cur_len = 1
+                target[:cur_len] = IGNORE_INDEX
+                for i, rou in enumerate(rounds):
+                    if rou == "":
+                        continue
+
+                    parts = rou.split(sep)
+                    if len(parts) != 2:
+                        break
+                    parts[0] += sep
+                    round_len = len(self.tokenizer_special_tokens(rou, tokenizer))
+                    instruction_len = len(self.tokenizer_special_tokens(parts[0], tokenizer)) - 2
+
+                    target[cur_len: cur_len + instruction_len] = IGNORE_INDEX
+
+                    cur_len += round_len
+                    idx += 1
+                target[cur_len:] = IGNORE_INDEX
+
+            if cur_len < tokenizer.model_max_length:
+                if cur_len != total_len:
+                    target[:] = IGNORE_INDEX
+                    print(
+                        f"WARNING: tokenization mismatch: {cur_len} vs. {total_len}."
+                        f" (ignored)"
+                    )
+
+        return dict(
+            input_ids=input_ids,
+            labels=targets,
+        )
+
+    def tokenizer_special_tokens(self, prompt, tokenizer, image_token_index=IMAGE_TOKEN_INDEX,
+                                 seg_token_index=SEG_TOKEN_INDEX, return_tensors=None):
+        prompt_chunks = []
+        special_tokens = []
+        image_splits = prompt.split('<image>')
+
+        for i, chunk in enumerate(image_splits):
+            if i != 0:
+                special_tokens.append('<image>')
+            seg_splits = chunk.split('<seg>')
+            prompt_chunks.extend(seg_splits)
+            special_tokens.extend(['<seg>'] * (len(seg_splits)-1))
+        prompt_chunks = [tokenizer(chunk).input_ids for chunk in prompt_chunks]
+        special_indexes = [image_token_index if token == '<image>' else seg_token_index for token in special_tokens]
+        # easy one
+        input_ids = []
+        for i, chunk in enumerate(prompt_chunks):
+            input_ids.extend(chunk)
+            if i != len(prompt_chunks) -1:
+                input_ids.extend([special_indexes[i]])
+        if return_tensors is not None:
+            if return_tensors == 'pt':
+                return torch.tensor(input_ids, dtype=torch.long).squeeze()
+            raise ValueError(f'Unsupported tensor type: {return_tensors}')
+        return input_ids
+    
+    def tokenizer_image_token(self, prompt, tokenizer, image_token_index=IMAGE_TOKEN_INDEX, return_tensors=None):
+        prompt_chunks = [tokenizer(chunk).input_ids for chunk in prompt.split('<image>')]
+
+        def insert_separator(X, sep):
+            return [ele for sublist in zip(X, [sep] * len(X)) for ele in sublist][:-1]
+
+        input_ids = []
+        offset = 0
+        if len(prompt_chunks) > 0 and len(prompt_chunks[0]) > 0 and prompt_chunks[0][0] == tokenizer.bos_token_id:
+            offset = 1
+            input_ids.append(prompt_chunks[0][0])
+
+        for x in insert_separator(prompt_chunks, [image_token_index] * (offset + 1)):
+            input_ids.extend(x[offset:])
+
+        if return_tensors is not None:
+            if return_tensors == 'pt':
+                return torch.tensor(input_ids, dtype=torch.long)
+            raise ValueError(f'Unsupported tensor type: {return_tensors}')
+        return input_ids
+
+
+    def __getitem__(self, i) -> Dict[str, torch.Tensor]:
+
+        t = len(self.questions)
+
+
+        sources = self.questions.iloc[i]
+        # if isinstance(i, int):
+        #     sources = [sources]
+        # sources = [sources]
+        # assert len(sources) == 1, "Don't know why it is wrapped to a list"  # FIXME
+        
+        data_dict = {}
+
+        options = self.get_options(sources, self.all_options)
+        cur_option_char = self.all_options[:len(options)]
+
+        data_dict['options'] = options
+        data_dict['cur_option_char'] = cur_option_char
+
+        data_dict['question_id'] = sources['index']
+        qs = sources["question"]
+        hint = sources['hint']
+
+        if not self.is_none(hint):
+            qs = hint + '\n' + qs
+        for option_char, option in zip(self.all_options[:len(options)], options):
+            qs = qs + '\n' + option_char + '. ' + option
+
+        qs = DEFAULT_IMAGE_TOKEN + '\n' + qs
+
+
+        # if isinstance(self.data_args.image_processor, dict):
+        #     processor = self.data_args.image_processor['instance']
+        # else:
+        #     processor = self.data_args.image_processor
+
+        image_clip = self.load_image_from_base64(sources['image'])
+
+        image_clip = self.clip_image_processor.preprocess(
+            image_clip, return_tensors="pt")["pixel_values"][0]
+        data_dict['images_clip'] = image_clip
+
+        single_promt_dataset = ['sqa', 'mmb']
+        if self.data_args.eval_dataset in single_promt_dataset:
+            qs = qs + '\n' + "Answer with the option's letter from the given choices directly."
+
+        data_dict['text'] = qs
+
+        conv = conversation_lib.default_conversation.copy()
+        conv.append_message(conv.roles[0], qs)
+        conv.append_message(conv.roles[1], None)
+        prompt = conv.get_prompt()
+        
+        # text_dict = self.preprocess_llama2(sources, self.tokenizer)
+        input_ids = self.tokenizer_image_token(prompt, self.tokenizer, IMAGE_TOKEN_INDEX, return_tensors='pt')
+
+        data_dict['input_ids'] = input_ids
+        data_dict['dataset_type'] = 'mm_conv'
+    
+        if 'transforms' in data_dict:
+            del data_dict['transforms']
+        
+        # if 'image' not in data_dict:
+        #     # image does not exist in the data, but the model is multimodal
+        #     crop_size = 1024
+        #     data_dict['image'] = torch.zeros(3, crop_size, crop_size)
+        return data_dict
+
 
 
 
