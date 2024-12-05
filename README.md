@@ -55,9 +55,9 @@ This paper aims to address universal segmentation for image and video perception
  <img src="imgs/exp_generic.jpg" width="100%">
 </p>
 
-### Common Video Segmentation
+### Common Video Segmentation and Multi-modal Benchmarks.
 <p align="center">
- <img src="imgs/exp_commonVideo.jpg" width="60%">
+ <img src="imgs/exp_video_mmbench.jpg" width="90%">
 </p>
 
 
