@@ -31,3 +31,25 @@ deepspeed /eval/eval_ReasonVOS.py \
   --save_path /output/ReasonVOS \
 ```
 
+
+## MMBench
+
+Refer to [MMBench GitHub](https://github.com/open-compass/MMBench) to download the benchmark dataset.
+
+```shell
+sh hyperseg/eval/script/test_mmb.sh
+```
+
+The response file can be found in `/output/mmb/answers_upload`. You can submit the Excel file to [submission link](https://mmbench.opencompass.org.cn/mmbench-submission) to obtain the evaluation scores.
+
+
+
+## VQAv2
+
+Refer to [here](https://github.com/BAAI-DCAI/Bunny/blob/main/script/eval/full/evaluation_full.md#vqav2) to prepare the VQAv2 benchmark dataset.
+
+```shell
+sh hyperseg/eval/script/test_vqav2.sh
+```
+
+The response file can be found in `/output/vqav2/vqav2_answers_upload.json`. You can submit the `json` response file to [submission link](https://eval.ai/web/challenges/challenge-page/830) (Test-Dev Phase) to obtain the evaluation scores.
