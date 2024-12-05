@@ -57,7 +57,7 @@ This paper aims to address universal segmentation for image and video perception
 
 ### Common Video Segmentation
 <p align="center">
- <img src="imgs/exp_commonVideo.jpg" width="80%">
+ <img src="imgs/exp_commonVideo.jpg" width="60%">
 </p>
 
 
