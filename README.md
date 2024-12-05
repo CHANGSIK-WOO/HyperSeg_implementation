@@ -76,9 +76,9 @@ pip install -r requirements.txt
 ## Pre-trained weights
 
 ### Mipha
-HyperSeg needs loading Mipha-3B pre-trained weights [Mipha-3B](https://huggingface.co/google/siglip-so400m-patch14-384).
+HyperSeg needs loading Mipha-3B pre-trained weights [Mipha-3B](https://huggingface.co/zhumj34/Mipha-3B).
 ### Vanilla Encoder
-Our Vanilla Encoder needs loading SigLIP-SO pre-trained weights [SigLIP-SO](https://huggingface.co/zhumj34/Mipha-3B).
+Our Vanilla Encoder needs loading SigLIP-SO pre-trained weights [SigLIP-SO](https://huggingface.co/google/siglip-so400m-patch14-384).
 ### Mask2Former weights
 The Segmentation Predictor requires loading Mask2Former Swin-B weights [Mask2Former](https://dl.fbaipublicfiles.com/maskformer/mask2former/coco/panoptic/maskformer2_swin_base_IN21k_384_bs16_50ep/model_final_54b88a.pkl).
 
