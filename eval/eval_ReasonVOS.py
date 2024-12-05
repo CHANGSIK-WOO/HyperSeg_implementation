@@ -169,7 +169,7 @@ def evaluation(data_args):
 
     model_path = os.path.expanduser(data_args.model_path)
     print(f'current model is {model_path}')
-    tokenizer, model, image_processor, context_len = load_pretrained_model(model_path, None, model_name, model_args=data_args, mask_config=data_args.mask_config, device='cuda')
+    tokenizer, model, image_processor, context_len = load_pretrained_model(model_path, model_args=data_args, mask_config=data_args.mask_config, device='cuda')
 
     device = torch.device(data_args.local_rank if torch.cuda.is_available() else "cpu") 
     model.to(dtype=torch.float32, device=device)
