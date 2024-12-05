@@ -46,3 +46,17 @@ ReasonSeg/
         image_1.jpg, image_1.json
         image_2.jpg, image_2.json
 ```
+
+## Expected dataset structure for [ReVOS](https://github.com/cilinyan/ReVOS-api):
+
+```
+ReVOS/
+    JPEGImages
+        <video1  >
+        <video2  >
+        <video...>
+    mask_dict.json
+    mask_dict_foreground.json 
+    meta_expressions_train_.json
+    meta_expressions_valid_.json
+```

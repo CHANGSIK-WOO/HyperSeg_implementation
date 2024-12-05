@@ -22,3 +22,12 @@ deepspeed /eval/eval_ReasonSeg.py \
   --reason_seg_data ReasonSeg|val \
 ```
 
+
+## ReasonVOS
+```
+deepspeed /eval/eval_ReasonVOS.py \
+  --revos_path /dataset/ReVOS \
+  --model_path /model/HyperSeg-3B \
+  --save_path /output/ReasonVOS \
+```
+
