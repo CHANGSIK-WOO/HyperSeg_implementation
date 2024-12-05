@@ -974,6 +974,124 @@ class HyperSeg(MiphaPhiForCausalLM):
         return None, attention_mask, past_key_values, new_input_embeds, new_labels, new_seg_query_masks, new_class_name_embedding_indices, new_region_embedding_masks, new_refer_embedding_indices
     
     
+    def mm_conv_prepare_inputs_labels_for_multimodal(
+        self, input_ids, attention_mask, past_key_values, labels, images):
+        vision_tower = self.get_vision_tower()
+        if vision_tower is None or images is None or input_ids.shape[1] == 1:
+            if past_key_values is not None and vision_tower is not None and images is not None and input_ids.shape[1] == 1:
+                attention_mask = torch.ones((attention_mask.shape[0], past_key_values[-1][-1].shape[-2] + 1), dtype=attention_mask.dtype, device=attention_mask.device)
+            return input_ids, attention_mask, past_key_values, None, labels
+
+        if type(images) is list or images.ndim == 5:
+            concat_images = torch.cat([image for image in images], dim=0)
+            image_features = self.encode_images(concat_images)
+            split_sizes = [image.shape[0] for image in images]
+            image_features = torch.split(image_features, split_sizes, dim=0)
+            image_features = [x.flatten(0, 1) for x in image_features]
+        else:
+            image_features = self.encode_images(images)
+
+        new_input_embeds = []
+        new_labels = [] if labels is not None else None
+        cur_image_idx = 0
+        for batch_idx, cur_input_ids in enumerate(input_ids):
+            if (cur_input_ids == IMAGE_TOKEN_INDEX).sum() == 0:
+                # multimodal LLM, but the current sample is not multimodal
+                cur_input_embeds = self.get_model().embed_tokens(cur_input_ids)
+                # ensure gradients back propagation, not changing cur_input_embeds
+                cur_input_embeds = cur_input_embeds + (0. * self.get_model().mm_projector(vision_tower.dummy_feature)).sum()
+                new_input_embeds.append(cur_input_embeds)
+                if labels is not None:
+                    new_labels.append(labels[batch_idx])
+                cur_image_idx += 1
+                continue
+            image_token_indices = torch.where(cur_input_ids == IMAGE_TOKEN_INDEX)[0]
+            cur_new_input_embeds = []
+            if labels is not None:
+                cur_labels = labels[batch_idx]
+                cur_new_labels = []
+                assert cur_labels.shape == cur_input_ids.shape
+            # concat text and image embedding. prepare labels, IGNORE_INDEX for image tokens
+            while image_token_indices.numel() > 0:
+                cur_image_features = image_features[cur_image_idx]
+                image_token_start = image_token_indices[0]
+                if getattr(self.config, 'tune_mm_mlp_adapter', False) and getattr(self.config, 'mm_use_im_start_end', False):
+                    cur_new_input_embeds.append(self.get_model().embed_tokens(cur_input_ids[:image_token_start-1]).detach())
+                    cur_new_input_embeds.append(self.get_model().embed_tokens(cur_input_ids[image_token_start-1:image_token_start]))
+                    cur_new_input_embeds.append(cur_image_features)
+                    cur_new_input_embeds.append(self.get_model().embed_tokens(cur_input_ids[image_token_start+1:image_token_start+2]))
+                    if labels is not None:
+                        cur_new_labels.append(cur_labels[:image_token_start])
+                        cur_new_labels.append(torch.full((cur_image_features.shape[0],), IGNORE_INDEX, device=labels.device, dtype=labels.dtype))
+                        cur_new_labels.append(cur_labels[image_token_start:image_token_start+1])
+                        cur_labels = cur_labels[image_token_start+2:]
+                else:
+                    cur_new_input_embeds.append(self.get_model().embed_tokens(cur_input_ids[:image_token_start]))
+                    cur_new_input_embeds.append(cur_image_features)
+                    if labels is not None:
+                        cur_new_labels.append(cur_labels[:image_token_start])
+                        cur_new_labels.append(torch.full((cur_image_features.shape[0],), IGNORE_INDEX, device=labels.device, dtype=labels.dtype))
+                        cur_labels = cur_labels[image_token_start+1:]
+                cur_image_idx += 1
+                if getattr(self.config, 'tune_mm_mlp_adapter', False) and getattr(self.config, 'mm_use_im_start_end', False):
+                    cur_input_ids = cur_input_ids[image_token_start+2:]
+                else:
+                    cur_input_ids = cur_input_ids[image_token_start+1:]
+                image_token_indices = torch.where(cur_input_ids == IMAGE_TOKEN_INDEX)[0]
+            if cur_input_ids.numel() > 0:
+                if getattr(self.config, 'tune_mm_mlp_adapter', False) and getattr(self.config, 'mm_use_im_start_end', False):
+                    cur_new_input_embeds.append(self.get_model().embed_tokens(cur_input_ids).detach())
+                else:
+                    cur_new_input_embeds.append(self.get_model().embed_tokens(cur_input_ids))
+                if labels is not None:
+                    cur_new_labels.append(cur_labels)
+            cur_new_input_embeds = [x.to(device=self.device) for x in cur_new_input_embeds]
+            cur_new_input_embeds = torch.cat(cur_new_input_embeds, dim=0)
+            new_input_embeds.append(cur_new_input_embeds)
+            if labels is not None:
+                cur_new_labels = torch.cat(cur_new_labels, dim=0)
+                new_labels.append(cur_new_labels)
+
+        # Align embedddings, labels, attn_mask from different sample into a batch
+        if any(x.shape != new_input_embeds[0].shape for x in new_input_embeds):
+            max_len = max(x.shape[0] for x in new_input_embeds)
+
+            new_input_embeds_align = []
+            for cur_new_embed in new_input_embeds:
+                cur_new_embed = torch.cat((cur_new_embed, torch.zeros((max_len - cur_new_embed.shape[0], cur_new_embed.shape[1]), dtype=cur_new_embed.dtype, device=cur_new_embed.device)), dim=0)
+                new_input_embeds_align.append(cur_new_embed)
+            new_input_embeds = torch.stack(new_input_embeds_align, dim=0)
+
+            if labels is not None:
+                new_labels_align = []
+                _new_labels = new_labels
+                for cur_new_label in new_labels:
+                    cur_new_label = torch.cat((cur_new_label, torch.full((max_len - cur_new_label.shape[0],), IGNORE_INDEX, dtype=cur_new_label.dtype, device=cur_new_label.device)), dim=0)
+                    new_labels_align.append(cur_new_label)
+                new_labels = torch.stack(new_labels_align, dim=0)
+
+            if attention_mask is not None:
+                new_attention_mask = []
+                for cur_attention_mask, cur_new_labels, cur_new_labels_align in zip(attention_mask, _new_labels, new_labels):
+                    new_attn_mask_pad_left = torch.full((cur_new_labels.shape[0] - labels.shape[1],), True, dtype=attention_mask.dtype, device=attention_mask.device)
+                    new_attn_mask_pad_right = torch.full((cur_new_labels_align.shape[0] - cur_new_labels.shape[0],), False, dtype=attention_mask.dtype, device=attention_mask.device)
+                    cur_new_attention_mask = torch.cat((new_attn_mask_pad_left, cur_attention_mask, new_attn_mask_pad_right), dim=0)
+                    new_attention_mask.append(cur_new_attention_mask)
+                attention_mask = torch.stack(new_attention_mask, dim=0)
+                assert attention_mask.shape == new_labels.shape
+        else:
+            new_input_embeds = torch.stack(new_input_embeds, dim=0)
+            if labels is not None:
+                new_labels  = torch.stack(new_labels, dim=0)
+
+            if attention_mask is not None:
+                new_attn_mask_pad_left = torch.full((attention_mask.shape[0], new_input_embeds.shape[1] - input_ids.shape[1]), True, dtype=attention_mask.dtype, device=attention_mask.device)
+                attention_mask = torch.cat((new_attn_mask_pad_left, attention_mask), dim=1)
+                assert attention_mask.shape == new_input_embeds.shape[:2]
+
+        return None, attention_mask, past_key_values, new_input_embeds, new_labels
+
+
 
     def get_SEG_embedding(self,hidden_states, refer_embedding_indices):
         refer_embedding_list = []
@@ -1011,7 +1129,6 @@ class HyperSeg(MiphaPhiForCausalLM):
         return cur_temporal_query
            
 
-    
     def get_seg_query(self, hidden_states, seg_query_masks):
         seg_query_list = []
         for sample_hidden_state, sample_query_mask in zip(hidden_states, seg_query_masks):
@@ -1216,6 +1333,103 @@ class HyperSeg(MiphaPhiForCausalLM):
             return processed_results
 
 
+    def forward(
+            self,
+            input_ids: torch.LongTensor = None,
+            attention_mask: Optional[torch.Tensor] = None,
+            past_key_values: Optional[List[torch.FloatTensor]] = None,
+            inputs_embeds: Optional[torch.FloatTensor] = None,
+            labels: Optional[torch.LongTensor] = None,
+            use_cache: Optional[bool] = None,
+            output_attentions: Optional[bool] = None,
+            output_hidden_states: Optional[bool] = None,
+            images: Optional[torch.FloatTensor] = None,
+            images_clip: Optional[torch.FloatTensor] = None,
+            return_dict: Optional[bool] = None,
+            seg_info=None,
+            class_name_ids=None,
+            class_name_embedding_indices=None,
+            cls_indices=None,
+            random_idx=None,
+            token_refer_id=None,
+            refer_embedding_indices=None,
+            global_step=None,
+            dataset_type=None,) -> Union[Tuple, CausalLMOutputWithPast]:
+        
+
+        if dataset_type is not None:
+            assert all(item == dataset_type[0] for item in dataset_type), f'this batch contain different dataset_type: {dataset_type}'
+            batch_dataset_type = dataset_type[0]
+            # print(batch_dataset_type)
+        else:
+            batch_dataset_type = []
+        output_attentions = output_attentions if output_attentions is not None else self.config.output_attentions
+        output_hidden_states = (
+            output_hidden_states if output_hidden_states is not None else self.config.output_hidden_states
+        )
+        return_dict = return_dict if return_dict is not None else self.config.use_return_dict
+
+        if images is not None and len(images.shape) < 5:
+            # append T dim
+            images = images.unsqueeze(1)
+        if images_clip is not None and len(images_clip.shape) < 5:
+            # append T dim
+            images_clip = images_clip.unsqueeze(1)
+
+        if 'mm_conv' in batch_dataset_type:
+            seg_query_mask = None
+            class_name_embedding_indices = None
+            region_embedding_masks = None
+            SEG_token_indices = None
+            cur_images_clip = None
+
+            if images_clip is not None:
+                cur_images_clip = images_clip[:, 0]
+
+            input_ids, attention_mask, past_key_values, inputs_embeds, labels = self.mm_conv_prepare_inputs_labels_for_multimodal(
+                input_ids, attention_mask, past_key_values, labels, cur_images_clip)
+
+        # decoder outputs consists of (dec_features, layer_state, dec_hidden, dec_attn)
+        outputs = self.model(
+            input_ids=input_ids,
+            attention_mask=attention_mask,
+            past_key_values=past_key_values,
+            inputs_embeds=inputs_embeds,
+            use_cache=use_cache,
+            output_attentions=output_attentions,
+            output_hidden_states=output_hidden_states,
+            return_dict=return_dict
+        )
+
+        hidden_states = outputs.last_hidden_state
+        logits = self.lm_head(hidden_states)
+        # print(logits.dtype)
+        # print(self.lm_head.weight.dtype)
+
+        if class_name_embedding_indices is not None:
+            class_name_embedding = self.get_class_name_embedding(hidden_states, class_name_embedding_indices) # bs 134 2560
+            
+        else:
+            class_name_embedding = None
+
+        if refer_embedding_indices is not None:
+            SEG_embedding = self.get_SEG_embedding(hidden_states, refer_embedding_indices)
+            # condition_embedding = SEG_embedding
+        else:
+            SEG_embedding = None
+
+        loss = None
+        if 'mm_conv' in batch_dataset_type and labels is None:
+            return CausalOutputWithMask(
+                loss=loss,
+                logits=logits,
+                past_key_values=outputs.past_key_values,
+                hidden_states=outputs.hidden_states,
+                attentions=outputs.attentions,
+            )
+
+
+
     def eval_vqa(
             self,
             do_sample=True,
@@ -1229,9 +1443,6 @@ class HyperSeg(MiphaPhiForCausalLM):
             past_key_values: Optional[List[torch.FloatTensor]] = None,
             labels: Optional[torch.LongTensor] = None,
             images_clip: Optional[torch.FloatTensor] = None,):
-        
-        # input_ids, attention_mask, past_key_values, inputs_embeds, labels = self.mm_conv_prepare_inputs_labels_for_multimodal(
-        #         input_ids, attention_mask, past_key_values, labels, images_clip)
         
 
         output_ids = self.generate(
