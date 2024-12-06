@@ -90,7 +90,7 @@ See [Preparing Datasets for HyperSeg.](docs/DATASET.md)
 
 See [Running Inference with HyperSeg.](docs/INFERENCE.md)
 
-
+See [Training HyperSeg.](docs/TRAINING.md)
 
 
 ## Citation 
