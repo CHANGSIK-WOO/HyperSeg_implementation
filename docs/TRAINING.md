@@ -1,4 +1,4 @@
 # Training HyperSeg
 
-Our training code is coming soon.
+Our training script will be released in 2025.
 
