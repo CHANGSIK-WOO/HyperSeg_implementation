@@ -62,7 +62,7 @@ class AverageMeter(object):
 
     def all_reduce(self):
         if not dist.is_available() or not dist.is_initialized():
-            # 싱글 GPU일 경우 그냥 패스
+            # if single GPU, pass and return
             return
         
         device = "cuda" if torch.cuda.is_available() else "cpu"
@@ -221,7 +221,7 @@ class DataArguments:
     output_dir: str = '../output/refcoco'
     segmentation: bool = True
     eval_batch_size: int = 1
-    dataloader_num_workers: int = 4
+    dataloader_num_workers: int = 8
     seg_task: Optional[str] = field(default="referring")
 
     sum_ref_pred_answer: bool = False
@@ -400,7 +400,7 @@ def do_eval(model, gt_data, eval_dataloader, save_suffix, data_args, device):
                 cv2.imwrite(save_path, save_img)
 
                 
-    if data_args.distributed:
+    if data_args.distributed: #Just if using multiple GPUs,
         intersection_meter.all_reduce()
         union_meter.all_reduce()
         acc_iou_meter.all_reduce()
