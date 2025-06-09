@@ -61,6 +61,10 @@ class AverageMeter(object):
         self.avg = self.sum / self.count
 
     def all_reduce(self):
+        if not dist.is_available() or not dist.is_initialized():
+            # 싱글 GPU일 경우 그냥 패스
+            return
+        
         device = "cuda" if torch.cuda.is_available() else "cpu"
         if isinstance(self.sum, np.ndarray):
             total = torch.tensor(
@@ -202,7 +206,7 @@ class DataArguments:
 
     vision_tower: str = "../pretrained_model/siglip-so400m-patch14-384"
     vision_tower_mask: str = "../pretrained_model/mask2former/maskformer2_swin_base_IN21k_384_bs16_50ep.pkl"
-    
+
 
     lazy_preprocess: bool = False
     is_multimodal: bool = False
@@ -217,7 +221,7 @@ class DataArguments:
     output_dir: str = '../output/refcoco'
     segmentation: bool = True
     eval_batch_size: int = 1
-    dataloader_num_workers: int = 8
+    dataloader_num_workers: int = 4
     seg_task: Optional[str] = field(default="referring")
 
     sum_ref_pred_answer: bool = False
@@ -396,10 +400,10 @@ def do_eval(model, gt_data, eval_dataloader, save_suffix, data_args, device):
                 cv2.imwrite(save_path, save_img)
 
                 
-    
-    intersection_meter.all_reduce()
-    union_meter.all_reduce()
-    acc_iou_meter.all_reduce()
+    if data_args.distributed:
+        intersection_meter.all_reduce()
+        union_meter.all_reduce()
+        acc_iou_meter.all_reduce()
     
     iou_class = intersection_meter.sum / (union_meter.sum + 1e-10)
     ciou = iou_class[1]
