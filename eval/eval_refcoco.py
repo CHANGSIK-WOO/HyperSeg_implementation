@@ -335,7 +335,9 @@ def do_eval(model, gt_data, eval_dataloader, save_suffix, data_args, device):
             image_id = inputs['seg_info'][0]['image_id']
             image_path = inputs['seg_info'][0]['file_name']
             gt_idx = image_id # [gt_id for gt_id, gt_ in enumerate(gt_data) if gt_['new_img_id'] == image_id][0]
-
+            if not os.path.exists(image_path):
+                print(f"[SKIP] 이미지 없음: {image_path}")
+                continue
             gt = gt_data[gt_idx]['anns'] # 
             refer_text = gt_data[gt_idx]['instruction'][0]['raw']
             h, w = gt_data[gt_idx]['image_info']['height'], gt_data[gt_idx]['image_info']['width']
